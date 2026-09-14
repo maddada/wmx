@@ -1,0 +1,12 @@
+name: Windows
+on: [push, pull_request]
+jobs:
+  conpty:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --check
+      - run: cargo build --release --locked
+      - shell: pwsh
+        run: ./tests/windows-smoke.ps1 -WmxExe ./target/release/wmx.exe
