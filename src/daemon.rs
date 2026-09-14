@@ -275,7 +275,7 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
                 .map(str::to_string);
             state.display.attach(client_id, rows, cols, prompt_editor);
             state.elect_grid()?;
-            let snapshot = super::history::snapshot(state.parser.screen());
+            let snapshot = state.snapshot(true);
             write_frame(&mut stream, &json!({"output": STANDARD.encode(snapshot)}))?;
             state.subscribers.insert(client_id, tx);
         }
@@ -437,6 +437,21 @@ fn dimension(data: &Value, key: &str) -> Result<u16> {
 }
 
 impl Terminal {
+    fn snapshot(&self, scrollback: bool) -> Vec<u8> {
+        let mut output = if scrollback {
+            super::history::snapshot(self.parser.screen())
+        } else {
+            self.parser.screen().state_formatted()
+        };
+        let title = &self.parser.callbacks().title;
+        if !title.is_empty() {
+            output.extend_from_slice(b"\x1b]2;");
+            output.extend_from_slice(title.as_bytes());
+            output.push(7);
+        }
+        output
+    }
+
     fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         if self.parser.screen().size() == (rows, cols) {
             return Ok(());
@@ -448,7 +463,7 @@ impl Terminal {
             pixel_height: 0,
         })?;
         self.parser.screen_mut().set_size(rows, cols);
-        let snapshot = self.parser.screen().state_formatted();
+        let snapshot = self.snapshot(false);
         self.subscribers
             .retain(|_, client| client.try_send(snapshot.clone()).is_ok());
         Ok(())

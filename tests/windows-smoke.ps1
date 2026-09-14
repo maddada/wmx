@@ -111,7 +111,7 @@ try {
     } while ((Get-Date) -lt $deadline)
     if ($history -notmatch 'WMX_SEND_OK') { throw 'Raw input was not delivered' }
     Write-Output 'PASS raw input and history'
-    $styled = "`$e=[char]27; [Console]::Write(`$e+'[2J'+`$e+'[H'+`$e+'[48;5;236m'+'WMX_STYLED_READY'+(' '*20)+`$e+'[0m'+`$e+'[3;1H'+'WMX_STYLED_FOOTER')`r"
+    $styled = "`$e=[char]27; [Console]::Write(`$e+']2;WMX_TITLE_OK'+[char]7+`$e+'[2J'+`$e+'[H'+`$e+'[48;5;236m'+'WMX_STYLED_READY'+(' '*20)+`$e+'[0m'+`$e+'[3;1H'+'WMX_STYLED_FOOTER')`r"
     Run-Wmx @('send', $name) $styled | Out-Null
     $deadline = (Get-Date).AddSeconds(10)
     do {
@@ -123,6 +123,13 @@ try {
     if ($plainRows[0] -notmatch '^WMX_STYLED_READY {20}' -or $plainRows[1].Trim() -or $plainRows[2] -notmatch '^WMX_STYLED_FOOTER') { throw 'Formatted history lost physical rows or literal padding' }
     if ($formatted -notmatch '\x1b\[[0-9;]*48;[0-9;]*mWMX_STYLED_READY') { throw 'Formatted history lost background style' }
     Write-Output 'PASS styled physical history rows and blank composer padding'
+    $reattached = Open-Client 'attach' @{ clientId=3; rows=21; cols=201 }
+    $clients += $reattached
+    $frame = $reattached.Reader.ReadLine() | ConvertFrom-Json
+    $replay = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($frame.output))
+    if (!$replay.Contains(([string][char]27)+']2;WMX_TITLE_OK'+[char]7)) { throw 'Reattachment lost terminal title' }
+    $reattached.Tcp.Dispose(); $clients=@()
+    Write-Output 'PASS reattachment restores terminal title'
     Run-Wmx @('attach', $name) | Out-Null
     Run-Wmx @('exists', $name) | Out-Null
     Write-Output 'PASS CLI attach detaches on stdin EOF without killing shell'
