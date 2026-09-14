@@ -1,5 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$WmxExe)
 $ErrorActionPreference = 'Stop'
+$WmxExe = (Resolve-Path -LiteralPath $WmxExe).Path
 $previousDirectory = $env:WMX_DIR
 $env:WMX_DIR = Join-Path ([IO.Path]::GetTempPath()) ('wmx-smoke-' + [guid]::NewGuid().ToString('N'))
 $name = 'smoke-session'
