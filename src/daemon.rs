@@ -312,7 +312,7 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
         match request.operation.as_str() {
             "ping" => {
                 json!({"pid": endpoint.pid, "shellPid": endpoint.shell_pid, "name": endpoint.name,
-                    "capabilities": ["client-visibility", "refresh", "detach"], "wire_generation": 1})
+                    "capabilities": ["client-visibility", "refresh", "detach"], "wire_generation": WIRE_GENERATION})
             }
             "input" => {
                 let bytes = STANDARD.decode(
