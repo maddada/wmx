@@ -275,7 +275,7 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
                 .map(str::to_string);
             state.display.attach(client_id, rows, cols, prompt_editor);
             state.elect_grid()?;
-            let snapshot = super::history::capture(state.parser.screen(), 10_000, true);
+            let snapshot = super::history::snapshot(state.parser.screen());
             write_frame(&mut stream, &json!({"output": STANDARD.encode(snapshot)}))?;
             state.subscribers.insert(client_id, tx);
         }

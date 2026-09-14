@@ -45,6 +45,8 @@ The shell receives `WMX_SESSION` and `ZMX_SESSION`. `WMX_DIR` chooses the sessio
 
 ## Shared behavior and maintenance
 
+Formatted history exports physical rows with literal padding and SGR styles, matching the chat parser contract. Attachment snapshots separately restore cursor position and terminal modes.
+
 This is API and behavior compatibility, not zmx binary wire compatibility. wmx uses authenticated, bounded JSON frames over per-session loopback TCP. Registry records contain a random per-session token. zmx uses its Unix IPC protocol. Keep registry data private to the Windows account.
 
 Every change to a Ghostex-consumed zmx feature must be reviewed against this table and the corresponding wmx modules:
