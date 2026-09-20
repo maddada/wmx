@@ -55,13 +55,31 @@ fn capture_inner(screen: &vt100::Screen, rows: usize, vt: bool, replay: bool) ->
     } else if vt {
         screen.state_formatted()
     } else {
-        screen.contents().into_bytes()
+        plain_rows(&screen, height, width)
     };
     while bytes + current.len() > 1024 * 1024 && !lines.is_empty() {
         bytes -= lines.pop_front().unwrap().len();
     }
     let mut output: Vec<u8> = lines.into_iter().flatten().collect();
     output.extend(current);
+    output
+}
+
+/// CDXC:SessionChat 2026-09-20 WHY:
+/// The live grid is emitted as physical rows, exactly like the scrollback batches
+/// above it and like zmx's own serializer. `vt100::Screen::contents` drops the
+/// newline after any row carrying the soft-wrap flag, and ConPTY repaints a row
+/// that fills the last column by letting the cursor auto-wrap instead of writing
+/// a line break, so every full-width row was glued to the row beneath it. That
+/// merged an agent's composer rules with its input and statusline rows, and the
+/// shape detectors that look for `rule / marker / rule` then reported a ready
+/// input box as missing.
+fn plain_rows(screen: &vt100::Screen, height: u16, width: u16) -> Vec<u8> {
+    let mut output = Vec::new();
+    for row in screen.rows(0, width).take(height as usize) {
+        output.extend_from_slice(row.as_bytes());
+        output.extend_from_slice(b"\r\n");
+    }
     output
 }
 
