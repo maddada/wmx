@@ -34,6 +34,7 @@ struct Terminal {
 /// User requested native Windows agents and projects without WSL.
 /// Each PowerShell session owns its ConPTY in a detached process so closing the desktop or restarting gxserver does not terminate the agent.
 pub(crate) fn run(launch: Launch) -> Result<()> {
+    super::launch::restore_ctrl_c()?;
     fs::create_dir_all(directory())?;
     let endpoint_path = path(&launch.name);
     let lock = OpenOptions::new()
@@ -127,7 +128,6 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
                 break;
             }
             let mut state = output_terminal.lock().unwrap_or_else(|e| e.into_inner());
-            let previous = state.parser.screen().clone();
             let previous_title = state.parser.callbacks().title.clone();
             state.parser.process(&buffer[..count]);
             let title = state.parser.callbacks().title.clone();
@@ -135,7 +135,7 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
                 state.titles.observe(&title, Instant::now());
             }
             let replies = std::mem::take(&mut state.parser.callbacks_mut().replies);
-            if !replies.is_empty() {
+            if state.subscribers.is_empty() && !replies.is_empty() {
                 if state
                     .writer
                     .write_all(&replies)
@@ -145,13 +145,7 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
                     break;
                 }
             }
-            let mut output = state.parser.screen().state_diff(&previous);
-            output.append(&mut state.parser.callbacks_mut().events);
-            if !output.is_empty() {
-                state
-                    .subscribers
-                    .retain(|_, client| client.try_send(output.clone()).is_ok());
-            }
+            broadcast_output(&mut state, &buffer[..count]);
         }
         output_alive.store(false, Ordering::Release);
     });
@@ -434,6 +428,14 @@ fn dimension(data: &Value, key: &str) -> Result<u16> {
         .filter(|value| (1..=2000).contains(value))
         .map(|value| value as u16)
         .with_context(|| format!("Invalid terminal {key}"))
+}
+
+/// CDXC:Terminal 2026-09-22 WHY:
+/// Screen diffs discard scrollback and terminal controls unknown to vt100. Like zmx, forward original PTY output to attached clients and answer device queries only when no client can answer them.
+fn broadcast_output(state: &mut Terminal, output: &[u8]) {
+    state
+        .subscribers
+        .retain(|_, client| client.try_send(output.to_vec()).is_ok());
 }
 
 impl Terminal {

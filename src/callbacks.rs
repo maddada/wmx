@@ -1,7 +1,6 @@
 #[derive(Default)]
 pub(crate) struct TerminalCallbacks {
     pub replies: Vec<u8>,
-    pub events: Vec<u8>,
     pub title: String,
 }
 
@@ -54,17 +53,5 @@ impl vt100::Callbacks for TerminalCallbacks {
             .chars()
             .filter(|ch| !ch.is_control())
             .collect();
-        self.events.extend_from_slice(b"\x1b]2;");
-        self.events.extend(
-            title
-                .iter()
-                .copied()
-                .filter(|byte| *byte >= 32 && *byte != 127),
-        );
-        self.events.push(7);
-    }
-
-    fn audible_bell(&mut self, _: &mut vt100::Screen) {
-        self.events.push(7);
     }
 }

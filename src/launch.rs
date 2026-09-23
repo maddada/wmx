@@ -8,6 +8,16 @@ use windows_sys::Win32::{
 };
 
 pub(crate) struct DetachedProcess(HANDLE);
+
+/// CDXC:Terminal 2026-09-22 WHY:
+/// CREATE_NEW_PROCESS_GROUP disables Ctrl+C and children inherit that attribute. Restore it before spawning the ConPTY shell so running PowerShell commands can be interrupted while the detached host remains independent of its launcher.
+pub(crate) fn restore_ctrl_c() -> Result<()> {
+    if unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0) } == 0 {
+        return Err(std::io::Error::last_os_error()).context("Unable to restore terminal Ctrl+C");
+    }
+    Ok(())
+}
+
 impl Drop for DetachedProcess {
     fn drop(&mut self) {
         unsafe {

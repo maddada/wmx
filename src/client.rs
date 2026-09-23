@@ -37,6 +37,8 @@ fn connect(endpoint: &Endpoint) -> Result<TcpStream> {
     Ok(stream)
 }
 
+/// CDXC:Zmx 2026-09-23 WHY:
+/// Stale registry records cost two seconds each in TCP connection timeouts, preventing process snapshots from completing within gxserver's five-second deadline. Verify the recorded host image and creation time before contacting its port, so reused PIDs cannot make dead sessions appear live.
 pub(crate) fn list() -> Result<Vec<Endpoint>> {
     let entries = match fs::read_dir(directory()) {
         Ok(entries) => entries,
@@ -50,6 +52,9 @@ pub(crate) fn list() -> Result<Vec<Endpoint>> {
             continue;
         }
         if let Ok(endpoint) = serde_json::from_slice::<Endpoint>(&fs::read(path)?) {
+            let Ok(Some(endpoint)) = super::process_owner::inspect(&endpoint.name) else {
+                continue;
+            };
             if request(&endpoint.name, "ping", Value::Null).is_ok() {
                 endpoints.push(endpoint);
             }
