@@ -47,6 +47,8 @@ The shell receives `WMX_SESSION` and `ZMX_SESSION`. `WMX_DIR` chooses the sessio
 
 Formatted history exports physical rows with literal padding and SGR styles, matching the chat parser contract. Plain history exports the same physical rows without styling, so a row that fills the last column keeps its own line instead of being glued to the row below it. Attachment snapshots separately restore cursor position and terminal modes.
 
+`vendor/vt100` contains the source and MIT license from the crates.io `vt100` 0.16.2 release. Its primary-grid resize preserves rows displaced above the cursor in scrollback before ConPTY repaints a smaller viewport. Upstream's `set_size` truncates those rows, so attaching a short Actions pane could permanently erase the first command output. The patch operates on the grid directly to preserve the live parser's partial escape sequences, scroll regions, styles, and saved cursor. zmx already preserves displaced rows through Ghostty's terminal resize; this Windows implementation change does not alter the wire generation.
+
 This is API and behavior compatibility, not zmx binary wire compatibility. wmx uses authenticated, bounded JSON frames over per-session loopback TCP. Registry records contain a random per-session token. zmx uses its Unix IPC protocol. Keep registry data private to the Windows account.
 
 Every change to a Ghostex-consumed zmx feature must be reviewed against this table and the corresponding wmx modules:

@@ -3,6 +3,8 @@ pub(crate) fn capture(screen: &vt100::Screen, rows: usize, vt: bool) -> Vec<u8> 
     capture_inner(screen, rows, vt, false)
 }
 
+/// CDXC:Zmx 2026-09-24 WHY:
+/// Replayed history must cross the client's viewport before the live-grid clear; otherwise short scrollback is erased on attachment. zmx's serializeTerminalState follows the same two-phase replay contract.
 pub(crate) fn snapshot(screen: &vt100::Screen) -> Vec<u8> {
     capture_inner(screen, 10_000, true, true)
 }
@@ -60,7 +62,19 @@ fn capture_inner(screen: &vt100::Screen, rows: usize, vt: bool, replay: bool) ->
     while bytes + current.len() > 1024 * 1024 && !lines.is_empty() {
         bytes -= lines.pop_front().unwrap().len();
     }
-    let mut output: Vec<u8> = lines.into_iter().flatten().collect();
+    let replay_history = replay && !lines.is_empty();
+    let mut output = Vec::new();
+    if replay_history {
+        output.extend_from_slice(b"\x1b[0m\x1b[2J\x1b[H");
+    }
+    output.extend(lines.into_iter().flatten());
+    if replay_history {
+        // Attach elects this client and resizes the grid before snapshotting.
+        // Each saved row already ends in CRLF; flush the remaining viewport.
+        for _ in 1..height {
+            output.extend_from_slice(b"\r\n");
+        }
+    }
     output.extend(current);
     output
 }
