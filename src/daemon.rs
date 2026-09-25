@@ -363,7 +363,7 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
                 json!({"ok": true})
             }
             "refresh" => {
-                let bytes = state.parser.screen().state_formatted();
+                let bytes = synchronized_screen(state.parser.screen());
                 if let Some(id) = request.data.get("clientId").and_then(Value::as_u64) {
                     if let Some(client) = state.subscribers.get(&id) {
                         let _ = client.try_send(bytes);
@@ -438,12 +438,22 @@ fn broadcast_output(state: &mut Terminal, output: &[u8]) {
         .retain(|_, client| client.try_send(output.to_vec()).is_ok());
 }
 
+/// CDXC:Zmx 2026-09-25 WHY:
+/// A repaint of the visible screen (a resize or `refresh`) is wrapped in its own synchronized-output pair (DECSET 2026), so a terminal that honors the mode paints the finished screen once instead of the states in between when the bytes arrive over several reads. The pair closes inside the same message; terminals that ignore the private mode are unaffected. The attach snapshot with scrollback is left as it is, like zmx's.
+/// SEE-ALSO: .dependencies/zmx/src/util.zig `serializeVisibleTerminalState` wraps its refresh the same way.
+fn synchronized_screen(screen: &vt100::Screen) -> Vec<u8> {
+    let mut output = b"\x1b[?2026h".to_vec();
+    output.extend_from_slice(&screen.state_formatted());
+    output.extend_from_slice(b"\x1b[?2026l");
+    output
+}
+
 impl Terminal {
     fn snapshot(&self, scrollback: bool) -> Vec<u8> {
         let mut output = if scrollback {
             super::history::snapshot(self.parser.screen())
         } else {
-            self.parser.screen().state_formatted()
+            synchronized_screen(self.parser.screen())
         };
         let title = &self.parser.callbacks().title;
         if !title.is_empty() {
