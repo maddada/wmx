@@ -7,6 +7,8 @@ mod cli;
 #[cfg(windows)]
 mod client;
 #[cfg(windows)]
+mod console_input;
+#[cfg(windows)]
 mod daemon;
 #[cfg(windows)]
 mod display;

@@ -53,6 +53,8 @@ This is API and behavior compatibility, not zmx binary wire compatibility. wmx u
 
 Every change to a Ghostex-consumed zmx feature must be reviewed against this table and the corresponding wmx modules:
 
+`send` and `attach` translate character CSI-u keys, standalone Escape, and Unicode input into ConPTY's Win32 input records in `src/console_input.rs`. This preserves modified Enter/Tab, dialog controls, and Unicode text for console-record applications such as Codex. Attachments request enhanced keyboard reporting and restore the previous mode when they close. Conversion is client-side, so existing generation-1 daemons benefit without restarting their sessions; an already attached client must reconnect to use the updated executable. Other escape sequences, bracketed-paste boundaries, and split UTF-8 are retained across attachment reads. POSIX zmx needs no conversion: its PTYs deliver VT directly to the application. This does not change IPC or the wire generation.
+
 | Shared contract                                                                     | zmx source                     | wmx source                                               |
 | ----------------------------------------------------------------------------------- | ------------------------------ | -------------------------------------------------------- |
 | Visible/chat/parked clients, latest active visible leader, 200-column resting width | `src/loop.zig`, `src/ipc.zig`  | `src/display.rs`, `src/daemon.rs`                        |

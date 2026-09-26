@@ -164,7 +164,13 @@ pub(crate) fn run() -> Result<()> {
             if bytes.len() > 1024 * 1024 {
                 bail!("Input exceeds 1 MiB");
             }
-            client::request(argument(1)?, "input", json!(STANDARD.encode(bytes)))?;
+            let mut encoder = super::console_input::ConsoleInput::default();
+            let mut encoded = encoder.feed(&bytes);
+            encoded.extend(encoder.finish());
+            // Unicode records expand the input. Keep each existing IPC frame bounded.
+            for chunk in encoded.chunks(256 * 1024) {
+                client::request(argument(1)?, "input", json!(STANDARD.encode(chunk)))?;
+            }
             Ok(())
         }
         "history" | "hi" => {

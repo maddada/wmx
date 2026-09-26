@@ -43,6 +43,7 @@ pub fn attach(name: &str, prompt_editor: Option<&str>) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let first: Value = read_frame(&mut reader)?;
     emit(&first)?;
+    let _keyboard = KeyboardMode::enable()?;
     let alive = Arc::new(AtomicBool::new(true));
     let input_alive = alive.clone();
     let input_name = name.to_string();
@@ -59,25 +60,43 @@ pub fn attach(name: &str, prompt_editor: Option<&str>) -> Result<()> {
     });
     thread::spawn(move || {
         let mut filter = InputFilter::default();
+        let mut encoder = super::console_input::ConsoleInput::default();
         let detach_key = std::env::var_os("ZMX_NO_DETACH_KEY").is_none()
             && std::env::var_os("WMX_NO_DETACH_KEY").is_none();
         'input: while input_alive.load(Ordering::Acquire) {
             let events = match rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(bytes) => filter.feed(&bytes, detach_key),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => filter.flush(),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let mut events = filter.flush();
+                    let bytes = encoder.idle();
+                    if !bytes.is_empty() {
+                        events.push(Input::Bytes(bytes));
+                    }
+                    events
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             };
             for event in events {
                 let (operation, data) = match event {
                     Input::Detach => break 'input,
-                    Input::Bytes(bytes) => (
-                        "input",
-                        if supports_visibility {
-                            json!({"clientId": client_id, "bytes": STANDARD.encode(bytes)})
-                        } else {
-                            json!(STANDARD.encode(bytes))
-                        },
-                    ),
+                    Input::Bytes(bytes) => {
+                        let mut bytes = encoder.feed(&bytes);
+                        // InputFilter releases a standalone Escape after its own idle delay.
+                        if bytes.is_empty() {
+                            bytes = encoder.idle();
+                        }
+                        if bytes.is_empty() {
+                            continue;
+                        }
+                        (
+                            "input",
+                            if supports_visibility {
+                                json!({"clientId": client_id, "bytes": STANDARD.encode(bytes)})
+                            } else {
+                                json!(STANDARD.encode(bytes))
+                            },
+                        )
+                    }
                     Input::Visibility { state, rows, cols } if supports_visibility => (
                         "visibility",
                         json!({"clientId": client_id, "state": state, "rows": rows, "cols": cols}),
@@ -146,4 +165,25 @@ fn emit(frame: &Value) -> Result<()> {
     stdout.write_all(&bytes)?;
     stdout.flush()?;
     Ok(())
+}
+
+// The client now consumes CSI-u. Ask capable terminals to preserve modifiers
+// before ConPTY sees them; restore the caller's keyboard mode on detach/EOF.
+struct KeyboardMode;
+
+impl KeyboardMode {
+    fn enable() -> Result<Self> {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(b"\x1b[>1u")?;
+        stdout.flush()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for KeyboardMode {
+    fn drop(&mut self) {
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(b"\x1b[<u");
+        let _ = stdout.flush();
+    }
 }
