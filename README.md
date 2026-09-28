@@ -15,7 +15,7 @@ Windows 10 version 1809 or newer is required for ConPTY. PowerShell 7 is recomme
 
 | Operation     | wmx interface                                                              | zmx behavior preserved                                                                                  |
 | ------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Start         | `start` with one JSON line on stdin, or `start-encoded BASE64_JSON`        | Idempotent detached session creation; existing sessions keep their process and environment.             |
+| Start         | `start` with one JSON line on stdin, or `start-encoded BASE64_JSON`        | Idempotent detached session creation; existing sessions keep their process and environment. A new session reads the current Machine and User environment from the registry, like a new Windows Terminal tab, so its PATH includes tools installed after the caller started. |
 | Attach        | `attach NAME [--require-existing] [--prompt-editor monaco\|code-server]`   | Snapshot followed by live VT output, raw input, reconnect, and Ctrl-\\ detach.                          |
 | Inventory     | `list [--short]`, `exists NAME`, `grid NAME`                               | Named sessions, liveness, and display leadership/grid metadata.                                         |
 | Input         | `send NAME [TEXT ...]`, or raw bytes on stdin                              | Input is delivered to the existing PTY; stdin is bounded to 1 MiB.                                      |

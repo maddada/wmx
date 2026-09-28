@@ -73,11 +73,7 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
     command.env("WMX_SESSION", &launch.name);
     command.env("ZMX_SESSION", &launch.name);
     if let Some(directory) = std::env::current_exe()?.parent() {
-        let mut paths = vec![directory.to_path_buf()];
-        if let Some(path) = std::env::var_os("PATH") {
-            paths.extend(std::env::split_paths(&path));
-        }
-        command.env("PATH", std::env::join_paths(paths)?);
+        command.env("PATH", session_path(directory, command.get_env("PATH")));
     }
     let mut reader = pair.master.try_clone_reader()?;
     let writer = pair.master.take_writer()?;
@@ -420,6 +416,32 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
         }
     };
     write_frame(&mut stream, &response)
+}
+
+/// CDXC:PlatformSupport 2026-09-28 WHY:
+/// A new session must see tools installed after gxserver started, as a new Windows Terminal tab does. `CommandBuilder` already reads the current Machine;User `Path` from the registry; replacing it with this daemon's inherited PATH (a copy of gxserver's startup snapshot) left `claude` and `codex` "not recognized" in every new terminal until the app and background service were restarted. Keep the registry value first, then the entries only the parent process had.
+fn session_path(
+    wmx_directory: &std::path::Path,
+    registry_path: Option<&std::ffi::OsStr>,
+) -> std::ffi::OsString {
+    let mut paths = vec![wmx_directory.to_path_buf()];
+    let inherited = std::env::var_os("PATH");
+    for value in [registry_path, inherited.as_deref()].into_iter().flatten() {
+        for entry in std::env::split_paths(value) {
+            let key = path_key(&entry);
+            if !key.is_empty() && !paths.iter().any(|known| path_key(known) == key) {
+                paths.push(entry);
+            }
+        }
+    }
+    std::env::join_paths(paths).unwrap_or_else(|_| inherited.unwrap_or_default())
+}
+
+fn path_key(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .trim()
+        .trim_end_matches(['\\', '/'])
+        .to_lowercase()
 }
 
 fn dimension(data: &Value, key: &str) -> Result<u16> {
