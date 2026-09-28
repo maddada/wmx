@@ -1,0 +1,10 @@
+# CDXC:PlatformSupport 2026-09-28 WHY: link the C runtime statically on Windows.
+# A clean Windows install has no Visual C++ redistributable, and every Ghostex
+# binary imported VCRUNTIME140.dll, so the installer stopped at "VCRUNTIME140.dll
+# was not found" before Ghostex could start. CEF's wrapper is already built /MT
+# (cef-dll-sys sets CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded), and GPUI upstream
+# builds this way too.
+# SEE-ALSO: apps/desktop, server, apps/editor/desktop and .dependencies/wmx carry
+# the same block; every binary the Windows installer ships needs it.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

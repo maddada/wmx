@@ -63,23 +63,54 @@ pub(crate) fn list() -> Result<Vec<Endpoint>> {
     Ok(endpoints)
 }
 
+/// CDXC:PlatformSupport 2026-09-28 WHY:
+/// The first session start after installing or updating Ghostex waits on the antivirus scan of the new host binary, which took longer than the five seconds a new host used to get and failed the start of a session that then came up anyway. A host that answers returns at once, so the longer wait only covers that slow first start. A registry record whose host is gone is skipped rather than pinged, as `list` does: its port may belong to another program by now and hold each ping for the full read timeout.
+/// SEE-ALSO: server/src/zmx/launch.rs `ZMX_START_COMMAND_TIMEOUT_MS` must stay longer than this wait.
+const START_READY_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn host_answers(name: &str) -> bool {
+    matches!(super::process_owner::inspect(name), Ok(Some(_)))
+        && request(name, "ping", Value::Null).is_ok()
+}
+
 pub(crate) fn start(launch: Launch) -> Result<()> {
-    if request(&launch.name, "ping", Value::Null).is_ok() {
+    if host_answers(&launch.name) {
         return Ok(());
     }
     let encoded = STANDARD.encode(serde_json::to_vec(&launch)?);
-    let child = super::launch::spawn(&encoded)?;
-    for _ in 0..100 {
-        if request(&launch.name, "ping", Value::Null).is_ok() {
+    let mut child = Some(super::launch::spawn(&encoded)?);
+    let deadline = std::time::Instant::now() + START_READY_TIMEOUT;
+    while std::time::Instant::now() < deadline {
+        if host_answers(&launch.name) {
             return Ok(());
         }
-        if let Some(status) = child.exited()? {
-            bail!("Native session host exited with status {status}");
+        if let Some(status) = child
+            .as_ref()
+            .map(|child| child.exited())
+            .transpose()?
+            .flatten()
+        {
+            if !host_holds_lock(&launch.name) {
+                bail!("Native session host exited with status {status}");
+            }
+            child = None;
         }
         thread::sleep(Duration::from_millis(50));
     }
-    child.terminate();
+    if let Some(child) = child {
+        child.terminate();
+    }
     bail!("Native PowerShell session did not become ready");
+}
+
+/// CDXC:PlatformSupport 2026-09-28 WHY:
+/// Two gxserver requests can start the same new session at once (the first session after onboarding did). The second host loses the session lock and exits with status 1 while the first is still coming up, which surfaced "Native session host exited with status 1" for a session that was running fine. A start whose host lost that race waits for the host that holds the lock instead.
+fn host_holds_lock(name: &str) -> bool {
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path(name).with_extension("lock"))
+        .is_ok_and(|lock| lock.try_lock().is_err())
 }
 
 pub(crate) struct ConsoleMode {
