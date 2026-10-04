@@ -113,6 +113,8 @@ fn host_holds_lock(name: &str) -> bool {
         .is_ok_and(|lock| lock.try_lock().is_err())
 }
 
+/// CDXC:Terminal 2026-10-04 WHY:
+/// The session's ConPTY moves down a row in the same column with a bare LF (`ESC[K LF`), as on a real VT with LNM off. An attachment's own console (the desktop's ConPTY) without `DISABLE_NEWLINE_AUTO_RETURN` turned every such LF into CR LF, so text Claude Code's `/usage` redrew at column 4 landed at column 1 and the leftovers stuck at the left edge. The flag also gives that console the VT's delayed wrap at the last column.
 pub(crate) struct ConsoleMode {
     input: windows_sys::Win32::Foundation::HANDLE,
     output: windows_sys::Win32::Foundation::HANDLE,
@@ -140,7 +142,10 @@ impl ConsoleMode {
                 output_mode,
             };
             if SetConsoleMode(input, ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_EXTENDED_FLAGS) == 0
-                || SetConsoleMode(output, output_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) == 0
+                || SetConsoleMode(
+                    output,
+                    output_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN,
+                ) == 0
             {
                 bail!("Unable to enable native terminal input");
             }
