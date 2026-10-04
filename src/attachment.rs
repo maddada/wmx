@@ -10,7 +10,7 @@ use std::{
     io::{BufReader, IsTerminal, Read, Write},
     net::{Shutdown, TcpStream},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         Arc,
     },
     thread,
@@ -42,12 +42,16 @@ pub fn attach(name: &str, prompt_editor: Option<&str>) -> Result<()> {
     )?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let first: Value = read_frame(&mut reader)?;
-    emit(&first)?;
+    // The daemon's view of the application's kitty keyboard flags; daemons
+    // without the field keep every CSI-u key translated.
+    let keyboard = Arc::new(AtomicU8::new(0));
+    emit(&first, &keyboard)?;
     let _keyboard = KeyboardMode::enable()?;
     let alive = Arc::new(AtomicBool::new(true));
     let input_alive = alive.clone();
     let input_name = name.to_string();
     let input_socket = stream.try_clone()?;
+    let input_keyboard = keyboard.clone();
     let (tx, rx) = std::sync::mpsc::sync_channel(128);
     thread::spawn(move || {
         let mut stdin = std::io::stdin().lock();
@@ -80,6 +84,7 @@ pub fn attach(name: &str, prompt_editor: Option<&str>) -> Result<()> {
                 let (operation, data) = match event {
                     Input::Detach => break 'input,
                     Input::Bytes(bytes) => {
+                        encoder.set_kitty_keys(input_keyboard.load(Ordering::Acquire));
                         let mut bytes = encoder.feed(&bytes);
                         // InputFilter releases a standalone Escape after its own idle delay.
                         if bytes.is_empty() {
@@ -142,7 +147,7 @@ pub fn attach(name: &str, prompt_editor: Option<&str>) -> Result<()> {
     });
     let result = (|| {
         while let Ok(frame) = read_frame::<Value>(&mut reader) {
-            emit(&frame)?;
+            emit(&frame, &keyboard)?;
         }
         Ok(())
     })();
@@ -151,9 +156,12 @@ pub fn attach(name: &str, prompt_editor: Option<&str>) -> Result<()> {
     result
 }
 
-fn emit(frame: &Value) -> Result<()> {
+fn emit(frame: &Value, keyboard: &AtomicU8) -> Result<()> {
     if let Some(error) = frame.get("error").and_then(Value::as_str) {
         bail!("{error}");
+    }
+    if let Some(flags) = frame.get("keyboard").and_then(Value::as_u64) {
+        keyboard.store(flags as u8, Ordering::Release);
     }
     let bytes = STANDARD.decode(
         frame

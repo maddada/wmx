@@ -9,9 +9,16 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW;
 pub struct ConsoleInput {
     pending: Vec<u8>,
     pasted: bool,
+    kitty_keys: bool,
 }
 
 impl ConsoleInput {
+    /// CDXC:Terminal 2026-10-04 WHY:
+    /// CSI-u keys become Win32 records only for applications that read console records (Codex, PSReadLine). An application that pushed kitty keyboard flags (Claude Code) reads VT input, where ConPTY re-encodes a Shift+Enter record as a bare CR: Shift+Enter submitted the prompt instead of inserting a newline. Forward CSI-u verbatim to those applications, as POSIX zmx does; ConPTY passes the unknown sequence through to them unchanged.
+    pub fn set_kitty_keys(&mut self, flags: u8) {
+        self.kitty_keys = flags != 0;
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
         self.pending.extend_from_slice(bytes);
         let mut output = Vec::new();
@@ -47,7 +54,7 @@ impl ConsoleInput {
                 } else if sequence == b"\x1b[201~" {
                     self.pasted = false;
                 }
-                if !self.pasted {
+                if !self.pasted && !self.kitty_keys {
                     if let Some(key) = csi_u(sequence) {
                         output.extend_from_slice(key.as_bytes());
                         offset += length;

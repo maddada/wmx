@@ -10,7 +10,7 @@ use std::{
     io::{BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc::{sync_channel, SyncSender},
         Arc, Mutex,
     },
@@ -28,6 +28,8 @@ struct Terminal {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     process: std::os::windows::io::OwnedHandle,
+    /// The application's current kitty keyboard flags, readable without the lock.
+    keyboard: Arc<AtomicU8>,
 }
 
 /// CDXC:PlatformSupport 2026-09-14 DECISION:
@@ -103,6 +105,7 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
             )
         }
         .try_clone_to_owned()?,
+        keyboard: Arc::new(AtomicU8::new(0)),
     }));
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
@@ -130,6 +133,11 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
             if title != previous_title {
                 state.titles.observe(&title, Instant::now());
             }
+            let keyboard = state
+                .parser
+                .callbacks()
+                .keyboard_flags(state.parser.screen());
+            state.keyboard.store(keyboard, Ordering::Release);
             let replies = std::mem::take(&mut state.parser.callbacks_mut().replies);
             if state.subscribers.is_empty() && !replies.is_empty() {
                 if state
@@ -244,6 +252,7 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
     }
     if request.operation == "attach" {
         let (tx, rx) = sync_channel(256);
+        let keyboard;
         let client_id = request
             .data
             .get("clientId")
@@ -266,7 +275,11 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
             state.display.attach(client_id, rows, cols, prompt_editor);
             state.elect_grid()?;
             let snapshot = state.snapshot(true);
-            write_frame(&mut stream, &json!({"output": STANDARD.encode(snapshot)}))?;
+            keyboard = state.keyboard.clone();
+            write_frame(
+                &mut stream,
+                &json!({"output": STANDARD.encode(snapshot), "keyboard": keyboard.load(Ordering::Acquire)}),
+            )?;
             state.subscribers.insert(client_id, tx);
         }
         let _attachment = Attachment {
@@ -276,9 +289,10 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
         stream.set_read_timeout(Some(Duration::from_millis(1)))?;
         loop {
             match rx.recv_timeout(Duration::from_secs(1)) {
-                Ok(output) => {
-                    write_frame(&mut stream, &json!({"output": STANDARD.encode(output)}))?
-                }
+                Ok(output) => write_frame(
+                    &mut stream,
+                    &json!({"output": STANDARD.encode(output), "keyboard": keyboard.load(Ordering::Acquire)}),
+                )?,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     // Reopening an idle terminal must release the previous attachment even when the shell produces no output.
@@ -302,7 +316,8 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
         match request.operation.as_str() {
             "ping" => {
                 json!({"pid": endpoint.pid, "shellPid": endpoint.shell_pid, "name": endpoint.name,
-                    "capabilities": ["client-visibility", "refresh", "detach"], "wire_generation": WIRE_GENERATION})
+                    "capabilities": ["client-visibility", "refresh", "detach", "keyboard-flags"], "wire_generation": WIRE_GENERATION,
+                    "keyboard": state.keyboard.load(Ordering::Acquire)})
             }
             "input" => {
                 let bytes = STANDARD.decode(

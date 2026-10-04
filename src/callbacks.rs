@@ -2,6 +2,55 @@
 pub(crate) struct TerminalCallbacks {
     pub replies: Vec<u8>,
     pub title: String,
+    /// Kitty keyboard flag stacks for the main and alternate screens.
+    keyboard: [KeyboardStack; 2],
+}
+
+impl TerminalCallbacks {
+    /// Kitty keyboard flags the application currently requests. Non-zero means
+    /// it decodes CSI-u key sequences from VT input itself.
+    pub fn keyboard_flags(&self, screen: &vt100::Screen) -> u8 {
+        self.keyboard[usize::from(screen.alternate_screen())].current()
+    }
+}
+
+/// Mirrors Ghostty's fixed ring (`KeyFlagStack`), the terminal Ghostex
+/// attaches with, so both sides agree after any push/pop/set sequence.
+#[derive(Default)]
+struct KeyboardStack {
+    flags: [u8; 8],
+    index: usize,
+}
+
+impl KeyboardStack {
+    fn current(&self) -> u8 {
+        self.flags[self.index]
+    }
+
+    fn push(&mut self, flags: u8) {
+        self.index = (self.index + 1) % self.flags.len();
+        self.flags[self.index] = flags;
+    }
+
+    fn pop(&mut self, count: usize) {
+        if count >= self.flags.len() {
+            *self = Self::default();
+            return;
+        }
+        for _ in 0..count {
+            self.flags[self.index] = 0;
+            self.index = (self.index + self.flags.len() - 1) % self.flags.len();
+        }
+    }
+
+    fn set(&mut self, flags: u8, mode: u16) {
+        let current = &mut self.flags[self.index];
+        *current = match mode {
+            2 => *current | flags,
+            3 => *current & !flags,
+            _ => flags,
+        };
+    }
 }
 
 impl vt100::Callbacks for TerminalCallbacks {
@@ -21,6 +70,28 @@ impl vt100::Callbacks for TerminalCallbacks {
             .and_then(|values| values.first())
             .copied()
             .unwrap_or(0);
+        if command == 'u' {
+            let stack = &mut self.keyboard[usize::from(screen.alternate_screen())];
+            // Kitty defines five flag bits.
+            let flags = (value & 0x1f) as u8;
+            match i1 {
+                Some(b'>') => stack.push(flags),
+                Some(b'<') => stack.pop(usize::from(value.max(1))),
+                Some(b'=') => stack.set(
+                    flags,
+                    params
+                        .get(1)
+                        .and_then(|values| values.first())
+                        .copied()
+                        .unwrap_or(1),
+                ),
+                Some(b'?') => self
+                    .replies
+                    .extend_from_slice(format!("\x1b[?{}u", stack.current()).as_bytes()),
+                _ => {}
+            }
+            return;
+        }
         match (i1, command, value) {
             (None, 'n', 6) => {
                 let (row, col) = screen.cursor_position();

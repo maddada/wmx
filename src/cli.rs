@@ -165,6 +165,9 @@ pub(crate) fn run() -> Result<()> {
                 bail!("Input exceeds 1 MiB");
             }
             let mut encoder = super::console_input::ConsoleInput::default();
+            // Daemons without the field report nothing and keep CSI-u translated.
+            let features = client::request(argument(1)?, "ping", Value::Null)?;
+            encoder.set_kitty_keys(features["keyboard"].as_u64().unwrap_or(0) as u8);
             let mut encoded = encoder.feed(&bytes);
             encoded.extend(encoder.finish());
             // Unicode records expand the input. Keep each existing IPC frame bounded.
