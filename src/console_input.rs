@@ -1,5 +1,28 @@
-use std::fmt::Write;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW;
+use std::{fmt::Write, sync::OnceLock};
+use windows_sys::Win32::System::LibraryLoader::{
+    GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+};
+
+/// CDXC:PlatformSupport 2026-10-06 WHY:
+/// Importing user32 statically made every wmx process connect to the desktop while loading. When Windows shuts down, gxserver respawns each session's `watch-title` after the old one exits; user32 could no longer initialise against the closing desktop, so each new wmx.exe failed with 0xc0000142 and Windows showed one "unable to start correctly" dialog per live session. Only CSI-u key translation in `attach`/`send` needs user32, so load it there, and keep wmx's import table free of user32 and gdi32.
+fn vk_key_scan(unit: u16) -> i16 {
+    type VkKeyScanW = unsafe extern "system" fn(u16) -> i16;
+    static FUNCTION: OnceLock<Option<VkKeyScanW>> = OnceLock::new();
+    let function = FUNCTION.get_or_init(|| unsafe {
+        let library: Vec<u16> = "user32.dll\0".encode_utf16().collect();
+        let module = LoadLibraryExW(
+            library.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_LIBRARY_SEARCH_SYSTEM32,
+        );
+        if module.is_null() {
+            return None;
+        }
+        GetProcAddress(module, b"VkKeyScanW\0".as_ptr())
+            .map(|address| std::mem::transmute::<_, VkKeyScanW>(address))
+    });
+    function.map_or(-1, |function| unsafe { function(unit) })
+}
 
 /// Translate character keys at the ConPTY boundary, before the existing IPC.
 /// ConPTY does not decode CSI-u and its layout synthesis can lose Unicode text.
@@ -156,7 +179,7 @@ fn csi_u(sequence: &[u8]) -> Option<String> {
         9 | 13 | 27 => code as u16,
         127 => 8,
         _ if code <= u16::MAX as u32 => {
-            let mapped = unsafe { VkKeyScanW(code as u16) };
+            let mapped = vk_key_scan(code as u16);
             if mapped == -1 {
                 0
             } else {
