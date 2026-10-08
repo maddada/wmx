@@ -8,6 +8,8 @@ pub enum Input {
     },
     Refresh,
     Detach,
+    /// `ZMX_DETACH=<nonce>`: detach once earlier input has gone out, then acknowledge the nonce.
+    DetachRequest(String),
 }
 
 #[derive(Default)]
@@ -33,6 +35,13 @@ impl InputFilter {
                     let control = String::from_utf8_lossy(&self.pending[PREFIX.len()..end]);
                     if control == "REFRESH" {
                         events.push(Input::Refresh);
+                    }
+                    if let Some(nonce) = control.strip_prefix("DETACH=").filter(|nonce| {
+                        !nonce.is_empty()
+                            && nonce.len() <= 64
+                            && nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    }) {
+                        events.push(Input::DetachRequest(nonce.to_string()));
                     }
                     for (prefix, state) in [
                         ("VISIBLE=", "visible"),

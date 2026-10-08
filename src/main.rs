@@ -9,6 +9,8 @@ mod client;
 #[cfg(windows)]
 mod console_input;
 #[cfg(windows)]
+mod control;
+#[cfg(windows)]
 mod daemon;
 #[cfg(windows)]
 mod display;

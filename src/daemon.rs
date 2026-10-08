@@ -30,6 +30,9 @@ struct Terminal {
     process: std::os::windows::io::OwnedHandle,
     /// The application's current kitty keyboard flags, readable without the lock.
     keyboard: Arc<AtomicU8>,
+    /// Open `chat-claim` connections; dropping a sender ends that connection.
+    chat_claims: BTreeMap<u64, SyncSender<()>>,
+    next_chat_claim: u64,
 }
 
 /// CDXC:PlatformSupport 2026-09-14 DECISION:
@@ -106,6 +109,8 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
         }
         .try_clone_to_owned()?,
         keyboard: Arc::new(AtomicU8::new(0)),
+        chat_claims: BTreeMap::new(),
+        next_chat_claim: 0,
     }));
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
@@ -199,6 +204,7 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
         let mut state = terminal.lock().unwrap_or_else(|error| error.into_inner());
         state.subscribers.clear();
         state.title_subscribers.clear();
+        state.chat_claims.clear();
     }
     for worker in workers {
         let _ = worker.join();
@@ -246,6 +252,43 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
                         ) => {}
                     Err(error) => return Err(error.into()),
                 },
+            }
+        }
+        return Ok(());
+    }
+    if request.operation == "chat-claim" {
+        let (tx, rx) = sync_channel::<()>(1);
+        let claim_id;
+        {
+            let mut state = terminal.lock().unwrap_or_else(|e| e.into_inner());
+            state.next_chat_claim += 1;
+            claim_id = CHAT_CLAIM_ID_BASE + state.next_chat_claim;
+            let rows = state.parser.screen().size().0;
+            state.display.claim_chat(claim_id, rows);
+            state.chat_claims.insert(claim_id, tx);
+            state.elect_grid()?;
+        }
+        let _claim = ChatClaim {
+            terminal: terminal.clone(),
+            claim_id,
+        };
+        write_frame(&mut stream, &json!({"ok": true}))?;
+        stream.set_read_timeout(Some(Duration::from_millis(1)))?;
+        // Held until the holder closes the connection or the session ends.
+        loop {
+            match rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    match stream.peek(&mut [0u8; 1]) {
+                        Ok(_) => break,
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) => {}
+                        Err(_) => break,
+                    }
+                }
             }
         }
         return Ok(());
@@ -316,7 +359,7 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
         match request.operation.as_str() {
             "ping" => {
                 json!({"pid": endpoint.pid, "shellPid": endpoint.shell_pid, "name": endpoint.name,
-                    "capabilities": ["client-visibility", "refresh", "detach", "keyboard-flags"], "wire_generation": WIRE_GENERATION,
+                    "capabilities": ["client-visibility", "refresh", "detach", "keyboard-flags", "chat-claim"], "wire_generation": WIRE_GENERATION,
                     "keyboard": state.keyboard.load(Ordering::Acquire)})
             }
             "input" => {
@@ -388,7 +431,7 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
             }
             "detach" => {
                 state.subscribers.clear();
-                state.display = super::display::DisplayPolicy::default();
+                state.display.detach_terminals();
                 json!({"ok": true})
             }
             "history" => {
@@ -535,6 +578,26 @@ impl Drop for Attachment {
             .unwrap_or_else(|error| error.into_inner());
         state.subscribers.remove(&self.client_id);
         state.display.remove(self.client_id);
+        let _ = state.elect_grid();
+    }
+}
+
+/// Chat-claim ids live above every attach client id (random `u32`s or a caller's own).
+const CHAT_CLAIM_ID_BASE: u64 = 1 << 62;
+
+struct ChatClaim {
+    terminal: Arc<Mutex<Terminal>>,
+    claim_id: u64,
+}
+impl Drop for ChatClaim {
+    /// Dropping a chat claim never narrows an unattended grid (`DisplayPolicy::grid`).
+    fn drop(&mut self) {
+        let mut state = self
+            .terminal
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.chat_claims.remove(&self.claim_id);
+        state.display.remove(self.claim_id);
         let _ = state.elect_grid();
     }
 }

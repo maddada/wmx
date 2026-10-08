@@ -189,4 +189,40 @@ pub(crate) fn watch_title(name: &str) -> Result<()> {
     }
 }
 
+/// Holds the session's chat claim until stdin closes or the session ends. Prints one
+/// `{"ok":true}` line once the daemon holds it; a daemon without the `chat-claim`
+/// capability answers with an error instead.
+pub(crate) fn chat_claim(name: &str) -> Result<()> {
+    let endpoint = endpoint(name)?;
+    let mut stream = connect(&endpoint)?;
+    write_frame(
+        &mut stream,
+        &Request {
+            token: endpoint.token,
+            operation: "chat-claim".into(),
+            data: Value::Null,
+        },
+    )?;
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let reply: Value = read_frame(&mut reader)?;
+    if let Some(message) = reply.get("error").and_then(Value::as_str) {
+        bail!("{message}");
+    }
+    {
+        let mut output = std::io::stdout().lock();
+        write_frame(&mut output, &reply)?;
+    }
+    // The clone keeps the five-second read timeout `connect` set; a timeout is not the end of the
+    // session, so the reading half waits without one.
+    reader.get_ref().set_read_timeout(None)?;
+    // The daemon closes the connection when its session ends.
+    thread::spawn(move || {
+        let _ = std::io::copy(&mut reader, &mut std::io::sink());
+        std::process::exit(0);
+    });
+    let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    Ok(())
+}
+
 pub(crate) use super::attachment::attach;

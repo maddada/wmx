@@ -17,10 +17,12 @@ Windows 10 version 1809 or newer is required for ConPTY. PowerShell 7 is recomme
 | ------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | Start         | `start` with one JSON line on stdin, or `start-encoded BASE64_JSON`        | Idempotent detached session creation; existing sessions keep their process and environment. A new session reads the current Machine and User environment from the registry, like a new Windows Terminal tab, so its PATH includes tools installed after the caller started. |
 | Attach        | `attach NAME [--require-existing] [--prompt-editor monaco\|code-server]`   | Snapshot followed by live VT output, raw input, reconnect, and Ctrl-\\ detach.                          |
+| Attach control | `WMX_ATTACH_CONTROL=<named pipe>` in the attach environment          | ConPTY drops unknown OSCs, so a caller can send the `ZMX_*` claims and the `ZMX_DETACH=<nonce>` handshake (answered with `ZMX_DETACH_CAP=1` / `ZMX_DETACH_ACK=<nonce>`) over this pipe instead of the console. |
 | Inventory     | `list [--short]`, `exists NAME`, `grid NAME`                               | Named sessions, liveness, and display leadership/grid metadata.                                         |
 | Input         | `send NAME [TEXT ...]`, or raw bytes on stdin                              | Input is delivered to the existing PTY; stdin is bounded to 1 MiB.                                      |
 | History       | `history NAME [--vt] [--scrollback N]`                                     | Plain text or VT screen plus bounded scrollback.                                                        |
 | Display       | `resize NAME ROWS COLS`, `refresh NAME`, `refresh-if-stale NAME ROWS COLS` | Atomic stale-grid comparison and refreshed snapshots.                                                   |
+| Chat claim    | `chat-claim NAME` (held until stdin closes)                                 | A chat shown without a terminal holds the 200-column chat claim (zmx `ChatClaim` tag); a visible terminal still leads, and releasing never narrows the grid. Capability `chat-claim`. |
 | Titles        | `watch-title NAME`                                                         | JSON lines, semantic debounce at 1 second, spinner heartbeat at 2 seconds, maximum settle at 6 seconds. |
 | Prompt editor | `prompt-editor-capability [NAME]`                                          | Active visible client's editor capability, otherwise `editor`.                                          |
 | Detach        | `detach [NAME]`                                                            | Disconnect clients while the shell stays alive.                                                         |
@@ -58,7 +60,8 @@ Every change to a Ghostex-consumed zmx feature must be reviewed against this tab
 | Shared contract                                                                     | zmx source                     | wmx source                                               |
 | ----------------------------------------------------------------------------------- | ------------------------------ | -------------------------------------------------------- |
 | Visible/chat/parked clients, latest active visible leader, 200-column resting width | `src/loop.zig`, `src/ipc.zig`  | `src/display.rs`, `src/daemon.rs`                        |
-| `ZMX_VISIBLE`, `ZMX_CHAT`, `ZMX_HIDDEN`, `ZMX_REFRESH` private OSCs                 | `src/loop.zig`                 | `src/input.rs`, `src/attachment.rs`                      |
+| `ZMX_VISIBLE`, `ZMX_CHAT`, `ZMX_HIDDEN`, `ZMX_REFRESH`, `ZMX_DETACH` private OSCs   | `src/loop.zig` | `src/input.rs`, `src/attachment.rs`, `src/control.rs` |
+| Server-held chat claim                                                              | `src/ipc.zig` (`ChatClaim`), `src/loop.zig` | `src/display.rs` (`claim_chat`), `src/daemon.rs` |
 | Screen/history and refresh                                                          | `src/loop.zig`                 | `src/history.rs`, `src/daemon.rs`                        |
 | Titles and spinner normalization                                                    | `src/title_events.zig`         | `src/title_events.rs`, `src/callbacks.rs`                |
 | Prompt-editor client capability                                                     | `src/ipc.zig`, `src/loop.zig`  | `src/display.rs`, `src/attachment.rs`                    |

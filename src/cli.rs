@@ -45,7 +45,7 @@ pub(crate) fn run() -> Result<()> {
             Ok(())
         }
         "help" | "--help" | "-h" | "" => {
-            println!("wmx: persistent Windows terminal sessions\nCommands: start, start-encoded, attach, list [--short], exists, send, history [--vt] [--scrollback N], grid, resize, refresh, refresh-if-stale, watch-title, detach, kill, version");
+            println!("wmx: persistent Windows terminal sessions\nCommands: start, start-encoded, attach, list [--short], exists, send, history [--vt] [--scrollback N], grid, resize, refresh, refresh-if-stale, watch-title, chat-claim, detach, kill, version");
             Ok(())
         }
         "detach" | "d" => {
@@ -132,6 +132,7 @@ pub(crate) fn run() -> Result<()> {
             Ok(())
         }
         "watch-title" => client::watch_title(argument(1)?),
+        "chat-claim" => client::chat_claim(argument(1)?),
         "kill" | "k" => {
             if args.get(1).is_some_and(|arg| arg == "--force") {
                 return super::process_owner::force_kill(argument(2)?);
