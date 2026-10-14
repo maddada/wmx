@@ -3,7 +3,7 @@
 //! id with the spec's lifetime rules. Spec:
 //! https://www.superlogical.com/rex/docs/build/program-status (revision 0.4).
 //!
-//! CDXC:ProgramStatus 2026-10-14 DECISION:
+//! CDXC:SessionStatus 2026-10-14 DECISION:
 //! User: "i want this implemented in the app and i want to have a setting to switch to using it instead of all the weird stuff we're doing to track when the agent is working or has attention status". The session daemon parses OSC 7501 and keeps the records because only it sees every byte of a session nobody is looking at, and it answers `OSC 7501 ; ?` itself so programs (Claude Code only reports after that answer) learn the protocol is supported with no client attached. Windows has no process groups, so working and blocked records end at the next OSC 133;A prompt, on `clear`, or when the session ends, not when the reporting program exits.
 //! SEE-ALSO: .dependencies/zmx/src/program_status.zig (the zmx twin; keep the rules identical), server/src/program_status/.
 

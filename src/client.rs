@@ -198,7 +198,7 @@ pub(crate) fn watch_title(name: &str) -> Result<()> {
     }
 }
 
-/// CDXC:ProgramStatus 2026-10-14 WHY:
+/// CDXC:SessionStatus 2026-10-14 WHY:
 /// Streams `{"programStatus":{...}}` lines next to the titles, the same lines `zmx watch-title` prints. A daemon from before OSC 7501 support answers the unknown operation with an error, which becomes one `{"programStatusSupported":false}` line so gxserver keeps that session on Ghostex's own detection.
 fn watch_program_status(endpoint: Endpoint) -> Result<()> {
     let mut stream = connect(&endpoint)?;
