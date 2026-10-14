@@ -24,6 +24,8 @@ mod launch;
 mod process_owner;
 #[cfg(windows)]
 mod process_snapshot;
+#[cfg(any(windows, test))]
+mod program_status;
 #[cfg(windows)]
 mod protocol;
 #[cfg(windows)]

@@ -33,7 +33,17 @@ struct Terminal {
     /// Open `chat-claim` connections; dropping a sender ends that connection.
     chat_claims: BTreeMap<u64, SyncSender<()>>,
     next_chat_claim: u64,
+    /// OSC 7501 records of this terminal (see program_status.rs), the scanner
+    /// that finds them in ConPTY output, and the `watch-program-status` streams.
+    program_status: super::program_status::Store,
+    program_status_scanner: super::program_status::Scanner,
+    program_status_subscribers: Vec<SyncSender<Value>>,
+    program_status_sent_generation: u64,
+    program_status_last_emit: Option<Instant>,
 }
+
+/// Minimum gap between two program-status snapshots, as in zmx.
+const PROGRAM_STATUS_MIN_INTERVAL: Duration = Duration::from_millis(100);
 
 /// CDXC:PlatformSupport 2026-09-14 DECISION:
 /// User requested native Windows agents and projects without WSL.
@@ -111,6 +121,11 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
         keyboard: Arc::new(AtomicU8::new(0)),
         chat_claims: BTreeMap::new(),
         next_chat_claim: 0,
+        program_status: Default::default(),
+        program_status_scanner: Default::default(),
+        program_status_subscribers: Vec::new(),
+        program_status_sent_generation: 0,
+        program_status_last_emit: None,
     }));
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
@@ -134,6 +149,9 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
             let mut state = output_terminal.lock().unwrap_or_else(|e| e.into_inner());
             let previous_title = state.parser.callbacks().title.clone();
             state.parser.process(&buffer[..count]);
+            if scan_program_status(&mut state, &buffer[..count]).is_err() {
+                break;
+            }
             let title = state.parser.callbacks().title.clone();
             if title != previous_title {
                 state.titles.observe(&title, Instant::now());
@@ -154,7 +172,12 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
                     break;
                 }
             }
-            broadcast_output(&mut state, &buffer[..count]);
+            // The daemon answered any OSC 7501 feature query above, so client
+            // terminals must not see (and answer) it again.
+            match super::program_status::strip_queries(&buffer[..count]) {
+                Some(stripped) => broadcast_output(&mut state, &stripped),
+                None => broadcast_output(&mut state, &buffer[..count]),
+            }
         }
         output_alive.store(false, Ordering::Release);
     });
@@ -175,6 +198,7 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
                     .title_subscribers
                     .retain(|client| client.try_send(title.clone()).is_ok());
             }
+            flush_program_status(&mut state);
         }
         match listener.accept() {
             Ok((stream, _)) => {
@@ -204,6 +228,7 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
         let mut state = terminal.lock().unwrap_or_else(|error| error.into_inner());
         state.subscribers.clear();
         state.title_subscribers.clear();
+        state.program_status_subscribers.clear();
         state.chat_claims.clear();
     }
     for worker in workers {
@@ -240,6 +265,33 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
         loop {
             match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(title) => write_frame(&mut stream, &json!({"title": title}))?,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => match stream.peek(&mut [0u8; 1])
+                {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(error) => return Err(error.into()),
+                },
+            }
+        }
+        return Ok(());
+    }
+    if request.operation == "watch-program-status" {
+        let (tx, rx) = sync_channel::<Value>(64);
+        {
+            let mut state = terminal.lock().unwrap_or_else(|e| e.into_inner());
+            write_frame(&mut stream, &json!({"programStatus": state.program_status.to_json()}))?;
+            state.program_status_subscribers.push(tx);
+        }
+        stream.set_read_timeout(Some(Duration::from_millis(1)))?;
+        loop {
+            match rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(snapshot) => write_frame(&mut stream, &json!({"programStatus": snapshot}))?,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => match stream.peek(&mut [0u8; 1])
                 {
@@ -359,7 +411,7 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
         match request.operation.as_str() {
             "ping" => {
                 json!({"pid": endpoint.pid, "shellPid": endpoint.shell_pid, "name": endpoint.name,
-                    "capabilities": ["client-visibility", "refresh", "detach", "keyboard-flags", "chat-claim"], "wire_generation": WIRE_GENERATION,
+                    "capabilities": ["client-visibility", "refresh", "detach", "keyboard-flags", "chat-claim", "program-status"], "wire_generation": WIRE_GENERATION,
                     "keyboard": state.keyboard.load(Ordering::Acquire)})
             }
             "input" => {
@@ -508,6 +560,59 @@ fn dimension(data: &Value, key: &str) -> Result<u16> {
         .filter(|value| (1..=2000).contains(value))
         .map(|value| value as u16)
         .with_context(|| format!("Invalid terminal {key}"))
+}
+
+/// Feed ConPTY output to the OSC 7501 scanner: store reports, answer the
+/// feature query (always, unlike device queries: an attached client terminal
+/// does not know the protocol), and apply the prompt-start and reset lifetimes.
+fn scan_program_status(state: &mut Terminal, output: &[u8]) -> std::io::Result<()> {
+    use super::program_status::{parse_body, query_reply, Body, Event};
+    let mut events = Vec::new();
+    state.program_status_scanner.feed(output, &mut events);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0);
+    for event in events {
+        match event {
+            Event::ProgramStatus { body: None, .. } => {}
+            Event::ProgramStatus {
+                body: Some(body),
+                sequence_len,
+                terminator,
+            } => match parse_body(&body, sequence_len) {
+                Body::Query => {
+                    state.writer.write_all(query_reply(terminator))?;
+                    state.writer.flush()?;
+                }
+                Body::Report(report) => state.program_status.apply(report, now_ms),
+                Body::Ignored => {}
+            },
+            Event::PromptStart => state.program_status.on_prompt_start(),
+            Event::FullReset => state.program_status.on_full_reset(),
+        }
+    }
+    Ok(())
+}
+
+/// Send a snapshot to `watch-program-status` streams when the records changed
+/// and the minimum interval passed.
+fn flush_program_status(state: &mut Terminal) {
+    if state.program_status.generation == state.program_status_sent_generation {
+        return;
+    }
+    if state
+        .program_status_last_emit
+        .is_some_and(|last| last.elapsed() < PROGRAM_STATUS_MIN_INTERVAL)
+    {
+        return;
+    }
+    let snapshot = state.program_status.to_json();
+    state
+        .program_status_subscribers
+        .retain(|client| client.try_send(snapshot.clone()).is_ok());
+    state.program_status_sent_generation = state.program_status.generation;
+    state.program_status_last_emit = Some(Instant::now());
 }
 
 /// CDXC:Terminal 2026-09-22 WHY:

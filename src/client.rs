@@ -167,6 +167,14 @@ impl Drop for ConsoleMode {
 /// gxserver observes titles independently of terminal attachments. A missing native watch-title command caused repeated failed launches and stale agent status.
 pub(crate) fn watch_title(name: &str) -> Result<()> {
     let endpoint = endpoint(name)?;
+    // Program status rides along on its own connection; the title stream below
+    // decides when the command ends.
+    {
+        let endpoint = endpoint.clone();
+        thread::spawn(move || {
+            let _ = watch_program_status(endpoint);
+        });
+    }
     let mut stream = connect(&endpoint)?;
     stream.set_read_timeout(None)?;
     write_frame(
@@ -178,11 +186,38 @@ pub(crate) fn watch_title(name: &str) -> Result<()> {
         },
     )?;
     let mut reader = BufReader::new(stream);
-    let mut output = std::io::stdout().lock();
     loop {
         let frame: Value = read_frame(&mut reader)?;
         if let Some(error) = frame.get("error").and_then(Value::as_str) {
             bail!("{error}");
+        }
+        // Locked per line: the program-status thread writes to stdout too.
+        let mut output = std::io::stdout().lock();
+        write_frame(&mut output, &frame)?;
+        output.flush()?;
+    }
+}
+
+/// CDXC:ProgramStatus 2026-10-14 WHY:
+/// Streams `{"programStatus":{...}}` lines next to the titles, the same lines `zmx watch-title` prints. A daemon from before OSC 7501 support answers the unknown operation with an error, which becomes one `{"programStatusSupported":false}` line so gxserver keeps that session on Ghostex's own detection.
+fn watch_program_status(endpoint: Endpoint) -> Result<()> {
+    let mut stream = connect(&endpoint)?;
+    stream.set_read_timeout(None)?;
+    write_frame(
+        &mut stream,
+        &Request {
+            token: endpoint.token,
+            operation: "watch-program-status".into(),
+            data: Value::Null,
+        },
+    )?;
+    let mut reader = BufReader::new(stream);
+    loop {
+        let frame: Value = read_frame(&mut reader)?;
+        let mut output = std::io::stdout().lock();
+        if frame.get("error").is_some() {
+            write_frame(&mut output, &serde_json::json!({"programStatusSupported": false}))?;
+            return Ok(());
         }
         write_frame(&mut output, &frame)?;
         output.flush()?;
