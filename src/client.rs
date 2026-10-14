@@ -216,7 +216,10 @@ fn watch_program_status(endpoint: Endpoint) -> Result<()> {
         let frame: Value = read_frame(&mut reader)?;
         let mut output = std::io::stdout().lock();
         if frame.get("error").is_some() {
-            write_frame(&mut output, &serde_json::json!({"programStatusSupported": false}))?;
+            write_frame(
+                &mut output,
+                &serde_json::json!({"programStatusSupported": false}),
+            )?;
             return Ok(());
         }
         write_frame(&mut output, &frame)?;

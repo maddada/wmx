@@ -304,7 +304,11 @@ impl Store {
             seq: self.seq,
             updated_at_ms: now_ms,
         };
-        if let Some(existing) = self.records.iter_mut().find(|existing| existing.id == record.id) {
+        if let Some(existing) = self
+            .records
+            .iter_mut()
+            .find(|existing| existing.id == record.id)
+        {
             *existing = record;
         } else {
             if self.records.len() >= MAX_RECORDS {
@@ -360,7 +364,11 @@ impl Store {
                 if let Some(progress) = record.progress {
                     object.insert("progress".into(), json!(progress));
                 }
-                for (key, text) in [("app", &record.app), ("title", &record.title), ("msg", &record.msg)] {
+                for (key, text) in [
+                    ("app", &record.app),
+                    ("title", &record.title),
+                    ("msg", &record.msg),
+                ] {
                     if let Some(text) = text {
                         object.insert(key.into(), json!(text));
                     }
@@ -422,10 +430,15 @@ impl Scanner {
     fn finish(&mut self, terminator: Terminator, events: &mut Vec<Event>) {
         match self.mode {
             Mode::Osc7501 | Mode::Osc7501Esc => {
-                let sequence_len = 2 + 4 + 1 + self.body.len() + if terminator == Terminator::Bel { 1 } else { 2 };
+                let sequence_len =
+                    2 + 4 + 1 + self.body.len() + if terminator == Terminator::Bel { 1 } else { 2 };
                 events.push(Event::ProgramStatus {
                     body: (!self.overflow).then(|| std::mem::take(&mut self.body)),
-                    sequence_len: if self.overflow { MAX_SEQUENCE_BYTES + 1 } else { sequence_len },
+                    sequence_len: if self.overflow {
+                        MAX_SEQUENCE_BYTES + 1
+                    } else {
+                        sequence_len
+                    },
                     terminator,
                 });
             }
@@ -581,13 +594,15 @@ mod tests {
             for event in events {
                 match event {
                     Event::ProgramStatus { body: None, .. } => ignored += 1,
-                    Event::ProgramStatus { body: Some(body), sequence_len, .. } => {
-                        match parse_body(&body, sequence_len) {
-                            Body::Query => queries += 1,
-                            Body::Ignored => ignored += 1,
-                            Body::Report(report) => store.apply(report, 1000),
-                        }
-                    }
+                    Event::ProgramStatus {
+                        body: Some(body),
+                        sequence_len,
+                        ..
+                    } => match parse_body(&body, sequence_len) {
+                        Body::Query => queries += 1,
+                        Body::Ignored => ignored += 1,
+                        Body::Report(report) => store.apply(report, 1000),
+                    },
                     Event::PromptStart => store.on_prompt_start(),
                     Event::FullReset => store.on_full_reset(),
                 }
@@ -603,7 +618,14 @@ mod tests {
     #[test]
     fn report_replaces_record_and_splits_across_reads() {
         let mut store = Store::default();
-        run(&mut store, &[b"\x1b]75", b"01;state=working:app=brew:progress=40:msg=SW5zdGFsbGluZyB1cGRhdGVz\x1b", b"\\"]);
+        run(
+            &mut store,
+            &[
+                b"\x1b]75",
+                b"01;state=working:app=brew:progress=40:msg=SW5zdGFsbGluZyB1cGRhdGVz\x1b",
+                b"\\",
+            ],
+        );
         let root = record(&store, "").unwrap();
         assert_eq!(root.state, State::Working);
         assert_eq!(root.progress, Some(40));
@@ -646,7 +668,10 @@ mod tests {
             ],
         );
         assert!(record(&store, "build/test").is_none());
-        run(&mut store, &[b"\x1b]7501;state=working\x07", b"\x1b]133;A\x07"]);
+        run(
+            &mut store,
+            &[b"\x1b]7501;state=working\x07", b"\x1b]133;A\x07"],
+        );
         assert_eq!(store.records.len(), 2);
         run(&mut store, &[b"\x1bc"]);
         assert!(store.records.is_empty());
@@ -666,7 +691,10 @@ mod tests {
     #[test]
     fn json_shape_matches_zmx() {
         let mut store = Store::default();
-        run(&mut store, &[b"\x1b]7501;state=blocked:kind=question:app=claude-code:msg=c2F5ICJoaSIgXA==\x07"]);
+        run(
+            &mut store,
+            &[b"\x1b]7501;state=blocked:kind=question:app=claude-code:msg=c2F5ICJoaSIgXA==\x07"],
+        );
         assert_eq!(
             store.to_json().to_string(),
             r#"{"records":[{"app":"claude-code","id":"","kind":"question","msg":"say \"hi\" \\","seq":1,"state":"blocked","updatedAtMs":1000}],"reported":true}"#

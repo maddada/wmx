@@ -285,7 +285,10 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
         let (tx, rx) = sync_channel::<Value>(64);
         {
             let mut state = terminal.lock().unwrap_or_else(|e| e.into_inner());
-            write_frame(&mut stream, &json!({"programStatus": state.program_status.to_json()}))?;
+            write_frame(
+                &mut stream,
+                &json!({"programStatus": state.program_status.to_json()}),
+            )?;
             state.program_status_subscribers.push(tx);
         }
         stream.set_read_timeout(Some(Duration::from_millis(1)))?;
