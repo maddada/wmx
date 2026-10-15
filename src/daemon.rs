@@ -431,6 +431,7 @@ fn serve(mut stream: TcpStream, terminal: Arc<Mutex<Terminal>>, endpoint: &Endpo
                 }
                 state.writer.write_all(&bytes)?;
                 state.writer.flush()?;
+                state.program_status.note_input(&bytes);
                 json!({"ok": true})
             }
             "refresh-if-stale" => {

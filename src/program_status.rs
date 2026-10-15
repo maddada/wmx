@@ -278,9 +278,20 @@ pub(crate) struct Store {
     ever_reported: bool,
     /// Bumped on every change, so the daemon knows a snapshot is due.
     pub generation: u64,
+    /// Input deliveries that submitted something (an Enter). Rides along in
+    /// every snapshot; gxserver counts an agent's working → idle as a finished
+    /// turn only when the working began after such input (zmx `Store.submits`).
+    submits: u64,
 }
 
 impl Store {
+    /// Count `bytes` (input bound for the program) when it submits something.
+    pub(crate) fn note_input(&mut self, bytes: &[u8]) {
+        if is_submit(bytes) {
+            self.submits += 1;
+        }
+    }
+
     pub(crate) fn apply(&mut self, report: Report, now_ms: i64) {
         self.ever_reported = true;
         if report.clear {
@@ -376,7 +387,7 @@ impl Store {
                 value
             })
             .collect();
-        json!({"reported": self.ever_reported, "records": records})
+        json!({"reported": self.ever_reported, "submits": self.submits, "records": records})
     }
 }
 
@@ -549,6 +560,16 @@ impl Scanner {
     }
 }
 
+/// Enter as a terminal sends it: CR or LF, or the kitty "report all keys"
+/// forms of Enter and keypad Enter.
+pub(crate) fn is_submit(bytes: &[u8]) -> bool {
+    let contains = |needle: &[u8]| bytes.windows(needle.len()).any(|window| window == needle);
+    bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n'))
+        || contains(b"\x1b[13u")
+        || contains(b"\x1b[13;")
+        || contains(b"\x1b[57414")
+}
+
 /// Remove complete `OSC 7501 ; ? <ST|BEL>` queries from output bound for
 /// attached clients: the daemon answers them itself, and a client terminal
 /// that also answered would hand the program a second reply.
@@ -697,7 +718,7 @@ mod tests {
         );
         assert_eq!(
             store.to_json().to_string(),
-            r#"{"records":[{"app":"claude-code","id":"","kind":"question","msg":"say \"hi\" \\","seq":1,"state":"blocked","updatedAtMs":1000}],"reported":true}"#
+            r#"{"records":[{"app":"claude-code","id":"","kind":"question","msg":"say \"hi\" \\","seq":1,"state":"blocked","updatedAtMs":1000}],"reported":true,"submits":0}"#
         );
     }
 }
