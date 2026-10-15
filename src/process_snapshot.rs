@@ -65,6 +65,53 @@ pub(crate) fn print() -> Result<()> {
     Ok(())
 }
 
+/// A process by pid and creation time, so a reused pid is not taken for it.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct ProcessStamp {
+    pid: u32,
+    created: Option<u64>,
+}
+
+/// The live child processes of `parent` created after it (a child keeps the pid of a parent
+/// that exited, and Windows reuses pids, see `print`).
+pub(crate) fn children(parent: u32) -> Vec<ProcessStamp> {
+    let parent_created = open(parent).and_then(|process| created(&process));
+    processes()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, parent_pid)| *parent_pid == parent)
+        .map(|(pid, _)| ProcessStamp {
+            pid,
+            created: open(pid).and_then(|process| created(&process)),
+        })
+        .filter(|child| match (parent_created, child.created) {
+            (Some(parent), Some(child)) => parent <= child,
+            _ => false,
+        })
+        .collect()
+}
+
+/// Whether the process is still running and is the same process (creation time).
+pub(crate) fn is_alive(stamp: ProcessStamp) -> bool {
+    let Some(process) = open(stamp.pid) else {
+        return false;
+    };
+    let mut code = 0u32;
+    // STILL_ACTIVE: an exited process whose handle someone still holds can still be opened.
+    if unsafe { windows_sys::Win32::System::Threading::GetExitCodeProcess(process.0, &mut code) }
+        == 0
+        || code != 259
+    {
+        return false;
+    }
+    stamp.created.is_none() || created(&process) == stamp.created
+}
+
+fn open(pid: u32) -> Option<Handle> {
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    (!raw.is_null()).then_some(Handle(raw))
+}
+
 fn processes() -> Result<Vec<(u32, u32)>> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {

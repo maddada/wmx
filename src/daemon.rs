@@ -40,6 +40,12 @@ struct Terminal {
     program_status_subscribers: Vec<SyncSender<Value>>,
     program_status_sent_generation: u64,
     program_status_last_emit: Option<Instant>,
+    /// The session shell's child processes when a program first reported
+    /// (`None` until then; empty when the shell itself reported), so the
+    /// daemon can tell when the reporting program exited.
+    program_status_reporter: Option<Vec<super::process_snapshot::ProcessStamp>>,
+    program_status_last_exit_check: Instant,
+    shell_pid: u32,
 }
 
 /// Minimum gap between two program-status snapshots, as in zmx.
@@ -126,6 +132,9 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
         program_status_subscribers: Vec::new(),
         program_status_sent_generation: 0,
         program_status_last_emit: None,
+        program_status_reporter: None,
+        program_status_last_exit_check: Instant::now(),
+        shell_pid,
     }));
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
@@ -589,7 +598,13 @@ fn scan_program_status(state: &mut Terminal, output: &[u8]) -> std::io::Result<(
                     state.writer.write_all(query_reply(terminator))?;
                     state.writer.flush()?;
                 }
-                Body::Report(report) => state.program_status.apply(report, now_ms),
+                Body::Report(report) => {
+                    state.program_status.apply(report, now_ms);
+                    if state.program_status_reporter.is_none() {
+                        state.program_status_reporter =
+                            Some(super::process_snapshot::children(state.shell_pid));
+                    }
+                }
                 Body::Ignored => {}
             },
             Event::PromptStart => state.program_status.on_prompt_start(),
@@ -601,7 +616,27 @@ fn scan_program_status(state: &mut Terminal, output: &[u8]) -> std::io::Result<(
 
 /// Send a snapshot to `watch-program-status` streams when the records changed
 /// and the minimum interval passed.
+///
+/// CDXC:SessionStatus 2026-10-15 DECISION:
+/// User: "fix that": under Auto a session must not stay on program status after the program that reported exits. Windows has no process groups, so the reporter is the shell's child processes at the first report; once none of them runs the session stops counting as reporting (its done and error records stay), and the next report captures the new program.
+/// SEE-ALSO: .dependencies/zmx/src/program_status.zig `dropExitedReporter` (the process-group twin).
 fn flush_program_status(state: &mut Terminal) {
+    if state.program_status_last_exit_check.elapsed() >= Duration::from_secs(1) {
+        state.program_status_last_exit_check = Instant::now();
+        let exited = state
+            .program_status_reporter
+            .as_ref()
+            .is_some_and(|reporter| {
+                !reporter.is_empty()
+                    && !reporter
+                        .iter()
+                        .any(|stamp| super::process_snapshot::is_alive(*stamp))
+            });
+        if exited {
+            state.program_status_reporter = None;
+            state.program_status.end_reporting();
+        }
+    }
     if state.program_status.generation == state.program_status_sent_generation {
         return;
     }

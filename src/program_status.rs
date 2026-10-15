@@ -273,8 +273,10 @@ fn is_self_or_descendant(id: &str, ancestor: &str) -> bool {
 pub(crate) struct Store {
     records: Vec<Record>,
     seq: u64,
-    /// Set once any report was applied; gxserver's "Auto" setting trusts a
-    /// session's reports from then on.
+    /// A program reported and is still running: set by every report, cleared
+    /// by the daemon (`end_reporting`) once that program exited. gxserver's
+    /// "Auto" setting follows the session's reports only while it is set;
+    /// done and error records stay past exit but no longer carry it.
     ever_reported: bool,
     /// Bumped on every change, so the daemon knows a snapshot is due.
     pub generation: u64,
@@ -289,6 +291,14 @@ impl Store {
     pub(crate) fn note_input(&mut self, bytes: &[u8]) {
         if is_submit(bytes) {
             self.submits += 1;
+        }
+    }
+
+    /// The program that reported exited: the session no longer counts as reporting.
+    pub(crate) fn end_reporting(&mut self) {
+        if self.ever_reported {
+            self.ever_reported = false;
+            self.generation += 1;
         }
     }
 
