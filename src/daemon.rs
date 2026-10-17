@@ -607,7 +607,22 @@ fn scan_program_status(state: &mut Terminal, output: &[u8]) -> std::io::Result<(
                 }
                 Body::Ignored => {}
             },
-            Event::PromptStart => state.program_status.on_prompt_start(),
+            // CDXC:SessionStatus 2026-10-17 WHY: the spec has the shell emit OSC 133, so a mark written while the program that reported still runs is that program's own output (Pi 1.3 frames every message it draws in OSC 133 zones) and ends none of its records; the shell's prompt after the program exits still does.
+            // SEE-ALSO: .dependencies/zmx/src/program_status.zig `onPromptStart`.
+            Event::PromptStart => {
+                let reporter_running =
+                    state
+                        .program_status_reporter
+                        .as_ref()
+                        .is_some_and(|reporter| {
+                            reporter
+                                .iter()
+                                .any(|stamp| super::process_snapshot::is_alive(*stamp))
+                        });
+                if !reporter_running {
+                    state.program_status.on_prompt_start();
+                }
+            }
             Event::FullReset => state.program_status.on_full_reset(),
         }
     }
