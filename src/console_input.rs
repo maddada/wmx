@@ -18,7 +18,7 @@ fn vk_key_scan(unit: u16) -> i16 {
         if module.is_null() {
             return None;
         }
-        GetProcAddress(module, b"VkKeyScanW\0".as_ptr())
+        GetProcAddress(module, c"VkKeyScanW".as_ptr().cast())
             .map(|address| std::mem::transmute::<_, VkKeyScanW>(address))
     });
     function.map_or(-1, |function| unsafe { function(unit) })

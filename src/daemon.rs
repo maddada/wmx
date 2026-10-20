@@ -171,15 +171,15 @@ pub(crate) fn run(launch: Launch) -> Result<()> {
                 .keyboard_flags(state.parser.screen());
             state.keyboard.store(keyboard, Ordering::Release);
             let replies = std::mem::take(&mut state.parser.callbacks_mut().replies);
-            if state.subscribers.is_empty() && !replies.is_empty() {
-                if state
+            if state.subscribers.is_empty()
+                && !replies.is_empty()
+                && state
                     .writer
                     .write_all(&replies)
                     .and_then(|_| state.writer.flush())
                     .is_err()
-                {
-                    break;
-                }
+            {
+                break;
             }
             // The daemon answered any OSC 7501 feature query above, so client
             // terminals must not see (and answer) it again.

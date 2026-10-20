@@ -151,10 +151,8 @@ pub fn attach(name: &str, prompt_editor: Option<&str>) -> Result<()> {
             }
             // CDXC:Zmx 2026-10-08 WHY:
             // The detach request arrives on the pipe while the keys written before it travel through ConPTY, so the two can be read in either order. Detach only after the console has been quiet for `DETACH_QUIET` and everything read from it went to the daemon; the acknowledgement then proves earlier input was delivered, as zmx's ordered Detach does.
-            if idle && last_stdin.elapsed() >= DETACH_QUIET {
-                if detach_nonce.is_some() {
-                    break 'input;
-                }
+            if idle && last_stdin.elapsed() >= DETACH_QUIET && detach_nonce.is_some() {
+                break 'input;
             }
         }
         input_alive.store(false, Ordering::Release);
