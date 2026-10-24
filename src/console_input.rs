@@ -99,7 +99,10 @@ impl ConsoleInput {
                 if remaining.len() < length {
                     break;
                 }
-                if let Ok(text) = std::str::from_utf8(&remaining[..length]) {
+                if let Some(text) = std::str::from_utf8(&remaining[..length])
+                    .ok()
+                    .filter(|text| !self.kitty_keys && fits_record(text))
+                {
                     let mut encoded = String::new();
                     for unit in text.encode_utf16() {
                         record(&mut encoded, 0, unit, 0, true);
@@ -137,6 +140,14 @@ impl ConsoleInput {
         }
         std::mem::take(&mut self.pending)
     }
+}
+
+/// Whether `text` can travel as Win32 input records: only an application that reads console records needs them, and only for units the record parameter can carry.
+///
+/// CDXC:Terminal 2026-10-25 WHY:
+/// The inbox conhost of Windows 11 22621 clamps every record parameter at 32767, so a unit above 0x7FFF (both emoji surrogate halves, the U+FE0F variation selector, every Hangul syllable) reached the application as U+7FFF ("翿"); such characters go as UTF-8, which ConPTY decodes itself. That conhost also reads its input 256 bytes at a time and loses a record cut by that boundary, so an application that pushed kitty keyboard flags (Claude Code, which reads VT input) gets all its text as UTF-8 and kept every character at every offset. A record reader (Codex, PSReadLine) keeps records for the rest: as UTF-8, ConPTY types a character outside the code page (✅, ⚠, ❓) as Alt+Numpad and hands it over on the Alt key release, which crossterm reports as a release that Codex ignores.
+fn fits_record(text: &str) -> bool {
+    text.encode_utf16().all(|unit| unit <= 0x7fff)
 }
 
 fn record(output: &mut String, vk: u16, unicode: u16, modifiers: u32, down: bool) {
