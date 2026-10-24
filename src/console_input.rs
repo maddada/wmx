@@ -1,4 +1,4 @@
-use std::{fmt::Write, sync::OnceLock};
+use std::{fmt::Write, ops::Range, sync::OnceLock};
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
 };
@@ -44,7 +44,7 @@ impl ConsoleInput {
 
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
         self.pending.extend_from_slice(bytes);
-        let mut output = Vec::new();
+        let mut output = Reads::default();
         let mut offset = 0;
         while offset < self.pending.len() {
             let remaining = &self.pending[offset..];
@@ -79,15 +79,15 @@ impl ConsoleInput {
                 }
                 if !self.pasted && !self.kitty_keys {
                     if let Some(key) = csi_u(sequence) {
-                        output.extend_from_slice(key.as_bytes());
+                        key.write(&mut output);
                         offset += length;
                         continue;
                     }
                 }
-                output.extend_from_slice(sequence);
+                output.push(sequence);
                 offset += length;
             } else if remaining[0].is_ascii() {
-                output.push(remaining[0]);
+                output.push(&remaining[..1]);
                 offset += 1;
             } else {
                 let length = match remaining[0] {
@@ -103,18 +103,17 @@ impl ConsoleInput {
                     .ok()
                     .filter(|text| !self.kitty_keys && fits_record(text))
                 {
-                    let mut encoded = String::new();
                     for unit in text.encode_utf16() {
-                        record(&mut encoded, 0, unit, 0, true);
+                        output.press(0, unit, 0);
                     }
-                    output.extend_from_slice(encoded.as_bytes());
                 } else {
-                    output.extend_from_slice(&remaining[..length]);
+                    output.push(&remaining[..length]);
                 }
                 offset += length;
             }
         }
         self.pending.drain(..offset);
+        let mut output = output.finish();
         // Bound malformed/unterminated control strings without losing their bytes.
         if self.pending.len() > 64 * 1024 {
             output.extend(self.finish());
@@ -132,33 +131,140 @@ impl ConsoleInput {
     }
 
     pub fn finish(&mut self) -> Vec<u8> {
+        let mut output = Reads::default();
         if self.pending == b"\x1b" {
             self.pending.clear();
-            let mut encoded = String::new();
-            record(&mut encoded, 27, 27, 0, true);
-            return encoded.into_bytes();
+            output.press(27, 27, 0);
+        } else {
+            output.push(&std::mem::take(&mut self.pending));
         }
-        std::mem::take(&mut self.pending)
+        output.finish()
+    }
+}
+
+/// How many bytes the inbox conhost of Windows 11 22621 reads from its ConPTY input pipe at a time.
+const READ: usize = 256;
+/// `ESC [ _`, the shortest no-op: a key-up record whose fields are all zero, which console readers skip. Leading zeros lengthen it.
+const NOOP: usize = 3;
+
+/// The bytes of one write to the ConPTY input pipe, laid out in conhost's reads.
+///
+/// CDXC:Terminal 2026-10-25 WHY:
+/// The inbox conhost of Windows 11 22621 reads its input pipe 256 bytes at a time and treats each read as whole keystrokes: a sequence still open at the end of a read is dispatched as it stands, and the rest of it is typed as text. A record reader (Codex, PSReadLine) got `;1;0;1_` or a stray `_` in place of the character whose record a read cut. So no character or sequence crosses a multiple of 256: one that would is preceded by a no-op that fills the read, and every write ends on a read boundary, so the next write starts on one even when conhost has not finished reading this one. One or two bytes are too few for a no-op, so then what fills the read's last three bytes moves into the next read behind a longer one.
+#[derive(Default)]
+struct Reads {
+    bytes: Vec<u8>,
+    /// The latest unit longer than one byte.
+    last: Range<usize>,
+}
+
+impl Reads {
+    /// Appends a unit conhost must read whole: a byte, a character or a sequence.
+    fn push(&mut self, unit: &[u8]) {
+        self.make_room(unit.len());
+        let start = self.bytes.len();
+        self.bytes.extend_from_slice(unit);
+        if unit.len() > 1 {
+            self.last = start..self.bytes.len();
+        }
+    }
+
+    /// A key press as a keyboard makes it: down, then up.
+    ///
+    /// CDXC:Terminal 2026-10-25 WHY:
+    /// conhost merges a key-down into an identical key-down still waiting in its input buffer by raising the repeat count, and crossterm ignores repeat counts, so `ééé` reached Codex as `é`. The key-up in between keeps every press its own record, as for the ASCII text conhost types itself. A surrogate half gets no key-up: crossterm takes a surrogate from any key record as the next half of a pair, so the key-up would break the pair.
+    fn press(&mut self, vk: u16, unicode: u16, modifiers: u32) {
+        self.record(vk, unicode, modifiers, true);
+        if !(0xd800..=0xdfff).contains(&unicode) {
+            self.record(vk, unicode, modifiers, false);
+        }
+    }
+
+    fn record(&mut self, vk: u16, unicode: u16, modifiers: u32, down: bool) {
+        let mut record = String::new();
+        let _ = write!(
+            record,
+            "\x1b[{vk};0;{unicode};{};{modifiers};1_",
+            u8::from(down)
+        );
+        self.push(record.as_bytes());
+    }
+
+    /// Pads to the end of the current read when `length` more bytes would cross it.
+    fn make_room(&mut self, length: usize) {
+        let mut offset = self.bytes.len() % READ;
+        if offset + length <= READ || length > READ {
+            return;
+        }
+        if READ - offset < NOOP {
+            let read = self.bytes.len() - offset;
+            let mut start = read + READ - NOOP;
+            if self.last.contains(&start) {
+                start = self.last.start;
+            }
+            // A single unit fills the read, so nothing can move.
+            if start == read {
+                return;
+            }
+            let moved = self.bytes.split_off(start);
+            let padding = READ - (start - read);
+            self.noop(padding);
+            if self.last.start >= start {
+                self.last = self.last.start + padding..self.last.end + padding;
+            }
+            self.bytes.extend(moved);
+            offset = self.bytes.len() % READ;
+            if offset + length <= READ || READ - offset < NOOP {
+                return;
+            }
+        }
+        self.noop(READ - offset);
+    }
+
+    fn noop(&mut self, length: usize) {
+        self.bytes.extend_from_slice(b"\x1b[");
+        self.bytes.resize(self.bytes.len() + length - NOOP, b'0');
+        self.bytes.push(b'_');
+    }
+
+    /// Ends the write on a read boundary.
+    fn finish(mut self) -> Vec<u8> {
+        if !self.bytes.is_empty() {
+            self.make_room(READ);
+        }
+        self.bytes
     }
 }
 
 /// Whether `text` can travel as Win32 input records: only an application that reads console records needs them, and only for units the record parameter can carry.
 ///
 /// CDXC:Terminal 2026-10-25 WHY:
-/// The inbox conhost of Windows 11 22621 clamps every record parameter at 32767, so a unit above 0x7FFF (both emoji surrogate halves, the U+FE0F variation selector, every Hangul syllable) reached the application as U+7FFF ("翿"); such characters go as UTF-8, which ConPTY decodes itself. That conhost also reads its input 256 bytes at a time and loses a record cut by that boundary, so an application that pushed kitty keyboard flags (Claude Code, which reads VT input) gets all its text as UTF-8 and kept every character at every offset. A record reader (Codex, PSReadLine) keeps records for the rest: as UTF-8, ConPTY types a character outside the code page (✅, ⚠, ❓) as Alt+Numpad and hands it over on the Alt key release, which crossterm reports as a release that Codex ignores.
+/// The inbox conhost of Windows 11 22621 clamps every record parameter at 32767, so a unit above 0x7FFF (both emoji surrogate halves, the U+FE0F variation selector, every Hangul syllable) reached the application as U+7FFF ("翿"); such characters go as UTF-8, which ConPTY decodes itself, also across its 256-byte reads (`Reads`). An application that pushed kitty keyboard flags (Claude Code, which reads VT input) gets all its text as UTF-8 and kept every character at every offset. A record reader (Codex, PSReadLine) keeps records for the rest: as UTF-8, ConPTY types a character outside the code page (✅, ⚠, ❓) as Alt+Numpad and hands it over on the Alt key release, which crossterm reports as a release that Codex ignores.
 fn fits_record(text: &str) -> bool {
     text.encode_utf16().all(|unit| unit <= 0x7fff)
 }
 
-fn record(output: &mut String, vk: u16, unicode: u16, modifiers: u32, down: bool) {
-    let _ = write!(
-        output,
-        "\x1b[{vk};0;{unicode};{};{modifiers};1_",
-        u8::from(down)
-    );
+/// A CSI-u key as Win32 input records.
+struct Key {
+    vk: u16,
+    text: char,
+    state: u32,
+    /// kitty's event type: 1 press, 2 repeat, 3 release.
+    event: u8,
 }
 
-fn csi_u(sequence: &[u8]) -> Option<String> {
+impl Key {
+    fn write(&self, output: &mut Reads) {
+        for unit in self.text.encode_utf16(&mut [0; 2]) {
+            match self.event {
+                1 => output.press(self.vk, *unit, self.state),
+                event => output.record(self.vk, *unit, self.state, event == 2),
+            }
+        }
+    }
+}
+
+fn csi_u(sequence: &[u8]) -> Option<Key> {
     let body = std::str::from_utf8(sequence)
         .ok()?
         .strip_prefix("\x1b[")?
@@ -216,9 +322,10 @@ fn csi_u(sequence: &[u8]) -> Option<String> {
             _ => text,
         };
     }
-    let mut output = String::new();
-    for unit in text.encode_utf16(&mut [0; 2]) {
-        record(&mut output, vk, *unit, state, event != 3);
-    }
-    Some(output)
+    Some(Key {
+        vk,
+        text,
+        state,
+        event,
+    })
 }
