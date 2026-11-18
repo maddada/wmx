@@ -29,7 +29,9 @@ impl Drop for Handle {
 /// The output keeps the `ps -axo pid=,ppid=,tty=,command=` shape gxserver parses, with `??` as the tty and no line breaks inside a command line.
 /// CDXC:SessionIdentity 2026-10-05 WHY:
 /// Windows never reparents an orphan, so a process keeps the pid of a parent that exited, and Windows hands that pid to new processes. Every wmx daemon is such an orphan (its launcher exits). When a short-lived tool process inside one session reused a daemon's old parent pid, gxserver's tree walk found that whole other session (its `claude --resume <id>`) below the first session's agent, took the deeper process as the session's agent, and the thread got the coordinator's conversation id, title and final message (observed 2026-10-04, thread G0hhy and coordinator G4snt). A parent pid is printed only when both processes' creation times can be read and the parent was created first; otherwise the row has parent 0. A link that cannot be checked does not count: a pwsh that could not be opened (no command line, no times) still parented a session's wmx daemon while its own dead parent's pid belonged to a new `sleep`.
-/// SEE-ALSO: Ghostex server/src/zmx/process_identity.rs `resolve_process_tree_agent_identity` (the tree walk this output feeds).
+/// CDXC:PlatformSupport 2026-11-18 WHY:
+/// Ghostex's gxserver also reads its live session names from the list section, in place of a separate `wmx list --short` (Ghostex GitHub #666), and still reads them from an output it cut at its 1 MiB cap. Keep that section first and keep it `client::list`, the same sessions `list` prints.
+/// SEE-ALSO: Ghostex server/src/zmx/process_identity.rs `resolve_process_tree_agent_identity` (the tree walk this output feeds), Ghostex server/src/zmx/probe_cache.rs `SharedProcessSnapshot` (the live-name reader).
 pub(crate) fn print() -> Result<()> {
     let mut output = String::from("__GHOSTEX_ZMX_LIST__\n");
     for session in super::client::list()? {
